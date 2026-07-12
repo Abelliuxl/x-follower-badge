@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X 用户名旁显示粉丝数
 // @namespace    https://github.com/liuxiaoliang
-// @version      1.1.3
+// @version      1.1.4
 // @description  在 X 时间线、搜索结果和推文详情的用户名旁显示粉丝数
 // @homepageURL  https://github.com/Abelliuxl/x-follower-badge
 // @supportURL   https://github.com/Abelliuxl/x-follower-badge/issues
@@ -40,7 +40,7 @@
       font-weight: 400;
       margin-left: 0.35em;
       position: relative;
-      top: 1px;
+      top: 2px;
       white-space: nowrap;
     }
     .xfb-nowrap-row {
