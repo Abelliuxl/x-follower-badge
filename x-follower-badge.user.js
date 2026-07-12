@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X 用户名旁显示粉丝数
 // @namespace    https://github.com/liuxiaoliang
-// @version      1.2.0
+// @version      1.2.1
 // @description  在 X 时间线、搜索结果和推文详情的用户名旁显示粉丝数
 // @homepageURL  https://github.com/Abelliuxl/x-follower-badge
 // @supportURL   https://github.com/Abelliuxl/x-follower-badge/issues
@@ -29,7 +29,6 @@
   let activeRequests = 0;
   let lastRequestAt = 0;
   let scanTimer = 0;
-  const observedLinks = new WeakMap();
 
   const EXCLUDED_PATHS = new Set([
     'compose', 'explore', 'home', 'i', 'jobs', 'messages', 'notifications',
@@ -222,30 +221,23 @@
 
   function scan(root = document) {
     root.querySelectorAll?.('[data-testid="User-Name"] a[href^="/"]').forEach((link) => {
-      const href = link.getAttribute('href');
-      if (observedLinks.get(link) === href) return;
-      observedLinks.set(link, href);
-      visibilityObserver.observe(link);
+      const rect = link.getBoundingClientRect();
+      if (rect.bottom < -600 || rect.top > window.innerHeight + 600) return;
+      processLink(link);
     });
   }
 
-  // 只请求视口附近的用户，避免打开长评论区时瞬间请求所有账号。
-  const visibilityObserver = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (!entry.isIntersecting) return;
-      visibilityObserver.unobserve(entry.target);
-      processLink(entry.target);
-    });
-  }, { rootMargin: '600px 0px' });
-
-  scan();
-  new MutationObserver(() => {
+  function scheduleScan() {
     clearTimeout(scanTimer);
     scanTimer = window.setTimeout(() => scan(), 180);
-  }).observe(document.body, {
+  }
+
+  scan();
+  new MutationObserver(scheduleScan).observe(document.body, {
     attributes: true,
     attributeFilter: ['href'],
     childList: true,
     subtree: true,
   });
+  window.addEventListener('scroll', scheduleScan, { passive: true });
 })();
