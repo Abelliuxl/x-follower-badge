@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X 用户名旁显示粉丝数
 // @namespace    https://github.com/liuxiaoliang
-// @version      1.1.4
+// @version      1.2.0
 // @description  在 X 时间线、搜索结果和推文详情的用户名旁显示粉丝数
 // @homepageURL  https://github.com/Abelliuxl/x-follower-badge
 // @supportURL   https://github.com/Abelliuxl/x-follower-badge/issues
@@ -20,11 +20,16 @@
   const BEARER_TOKEN =
     'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
   const CACHE_TTL = 30 * 60 * 1000;
+  const FAILURE_TTL = 60 * 1000;
+  const MIN_REQUEST_GAP = 700;
   const cache = new Map();
+  const failureUntil = new Map();
   const inflight = new Map();
   const queue = [];
   let activeRequests = 0;
+  let lastRequestAt = 0;
   let scanTimer = 0;
+  const observedLinks = new WeakMap();
 
   const EXCLUDED_PATHS = new Set([
     'compose', 'explore', 'home', 'i', 'jobs', 'messages', 'notifications',
@@ -78,7 +83,7 @@
   }
 
   function drainQueue() {
-    while (activeRequests < 3 && queue.length) {
+    while (activeRequests < 1 && queue.length) {
       const { task, resolve } = queue.shift();
       activeRequests += 1;
       task().then(resolve, () => resolve(null)).finally(() => {
@@ -88,10 +93,21 @@
     }
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function waitForRequestSlot() {
+    const wait = MIN_REQUEST_GAP - (Date.now() - lastRequestAt);
+    if (wait > 0) await sleep(wait);
+    lastRequestAt = Date.now();
+  }
+
   async function requestFollowers(username) {
     const key = username.toLowerCase();
     const cached = readCache(key);
     if (cached !== null) return cached;
+    if ((failureUntil.get(key) || 0) > Date.now()) return null;
     if (inflight.has(key)) return inflight.get(key);
 
     const promise = enqueue(async () => {
@@ -123,15 +139,32 @@
         headers['x-twitter-auth-type'] = 'OAuth2Session';
       }
 
-      const response = await fetch(url, { credentials: 'include', headers });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const json = await response.json();
-      const result = json?.data?.user?.result;
-      const count = result?.legacy?.followers_count ?? result?.core?.followers_count;
-      if (!Number.isFinite(count)) throw new Error('响应中没有 followers_count');
-      cache.set(key, { count, time: Date.now() });
-      return count;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await waitForRequestSlot();
+        const response = await fetch(url, { credentials: 'include', headers });
+        if (response.ok) {
+          const json = await response.json();
+          const result = json?.data?.user?.result;
+          const count = result?.legacy?.followers_count ?? result?.core?.followers_count;
+          if (!Number.isFinite(count)) throw new Error('响应中没有 followers_count');
+          cache.set(key, { count, time: Date.now() });
+          failureUntil.delete(key);
+          return count;
+        }
+
+        if (response.status !== 429 && response.status < 500) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const retryAfter = Number(response.headers.get('retry-after'));
+        const delay = Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : 3000 * (attempt + 1);
+        console.info(`[X Follower Badge] @${username} 遇到 HTTP ${response.status}，${delay / 1000} 秒后重试`);
+        await sleep(delay);
+      }
+      throw new Error('多次重试后仍然失败');
     }).catch((error) => {
+      failureUntil.set(key, Date.now() + FAILURE_TTL);
       console.warn(`[X Follower Badge] @${username} 获取失败：`, error);
       return null;
     }).finally(() => inflight.delete(key));
@@ -188,12 +221,31 @@
   }
 
   function scan(root = document) {
-    root.querySelectorAll?.('[data-testid="User-Name"] a[href^="/"]').forEach(processLink);
+    root.querySelectorAll?.('[data-testid="User-Name"] a[href^="/"]').forEach((link) => {
+      const href = link.getAttribute('href');
+      if (observedLinks.get(link) === href) return;
+      observedLinks.set(link, href);
+      visibilityObserver.observe(link);
+    });
   }
+
+  // 只请求视口附近的用户，避免打开长评论区时瞬间请求所有账号。
+  const visibilityObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      visibilityObserver.unobserve(entry.target);
+      processLink(entry.target);
+    });
+  }, { rootMargin: '600px 0px' });
 
   scan();
   new MutationObserver(() => {
     clearTimeout(scanTimer);
     scanTimer = window.setTimeout(() => scan(), 180);
-  }).observe(document.body, { childList: true, subtree: true });
+  }).observe(document.body, {
+    attributes: true,
+    attributeFilter: ['href'],
+    childList: true,
+    subtree: true,
+  });
 })();
